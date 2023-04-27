@@ -1,0 +1,18 @@
+[submodule "ngnix/nginx-github.io"]
+	path = ngnix/nginx-github.io
+	url = https://github.com/siva-pra/nginx-github.io.git
+[submodule "nginx-github.io"]
+	path = nginx-github.io
+	url = https://github.com/siva-pra/nginx-github.io.git
+[submodule "Ansiblel/nginx-github.io"]
+	path = Ansiblel/nginx-github.io
+	url = https://github.com/siva-pra/nginx-github.io.git
+[submodule "IOT_shellscripts/nginx-github.io"]
+	path = IOT_shellscripts/nginx-github.io
+	url = https://github.com/siva-pra/nginx-github.io.git
+[submodule "IOT_shellscripts_readme_files.tar.gzs/nginx-github.io"]
+	path = IOT_shellscripts_readme_files.tar.gzs/nginx-github.io
+	url = https://github.com/siva-pra/nginx-github.io.git
+[submodule "tasks/nginx-github.io"]
+	path = tasks/nginx-github.io
+	url = https://github.com/siva-pra/nginx-github.io.git
