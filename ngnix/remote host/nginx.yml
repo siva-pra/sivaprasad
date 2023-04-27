@@ -1,0 +1,39 @@
+---
+- name: Install Nginx and copy files
+  hosts: node
+  become: true
+
+  tasks:
+    - name: Add epel-release repo
+      ansible.builtin.yum:
+        name: epel-release
+        state: present
+
+
+    - name: Install Nginx
+      ansible.builtin.yum:
+        name: nginx
+        state: present
+
+    - name: Insert Index Page
+      ansible.builtin.copy:
+        src: /home/devops/ansible/index.html
+        dest: /usr/share/nginx/html/index.html
+    
+    - name:
+      ansible.builtin.copy: 
+        src: /home/devops/ansible/styles
+        dest: /usr/share/nginx/html/
+   
+    - name: Copy custom config file
+      ansible.builtin.copy: 
+        src: /home/devops/ansible/nginx.config
+        dest: /etc/nginx/nginx.config
+      notify:
+        - Restart Nginx
+        
+  handlers:
+    - name: Restart Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted

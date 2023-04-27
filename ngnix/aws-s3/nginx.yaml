@@ -1,0 +1,45 @@
+---
+- name: Configure AWS S3 bucket as a static website
+  hosts: localhost
+  connection: local
+  vars:
+    - BUCKET_NAME: sivansible
+    - REGION: us-east-1
+  tasks:
+    - name: create s3 bucket
+      shell: aws s3api create-bucket --bucket "{{ BUCKET_NAME }}" --region "{{ REGION }}"
+    - name: Upload index.html and styles.css to the bucket
+      shell: aws s3 cp index.html "s3://{{ BUCKET_NAME }}/index.html"
+    - name: Upload styles.css to bucket
+      shell: aws s3 cp styles.css "s3://{{ BUCKET_NAME }}/styles.css"
+    - name: Turn off block public access for the bucket
+      shell: aws s3api put-public-access-block --bucket "{{ BUCKET_NAME }}" --public-access-block-configuration "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false"
+    - name: Configure the bucket as a static website
+      shell: aws s3 website "s3://{{ BUCKET_NAME }}" --index-document index.html --error-document error.html
+    - name: Apply bucket policy to allow public read access
+      copy:
+        content: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "PublicReadGetObject",
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::{{ BUCKET_NAME }}/*"
+              },
+              {
+                "Sid": "AllowBucketPolicy",
+                "Effect": "Allow",
+                "Action": "s3:PutBucketPolicy",
+                "Principal": {
+                  "AWS": "*"
+                },
+                "Resource": "arn:aws:s3:::{{ BUCKET_NAME }}"
+              }
+            ]
+          }
+        dest: policy.json
+    - name: Apply the bucket policy
+      shell: aws s3api put-bucket-policy --bucket "{{ BUCKET_NAME }}" --policy file://policy.json

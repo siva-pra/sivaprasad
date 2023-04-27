@@ -1,0 +1,39 @@
+---
+- name: cp files to s3
+  hosts: localhost
+  connection: local 
+  vars:
+    bucket_name: s3sivansible
+    index_document: index.html
+    error_document: error.html
+  tasks:
+    
+    - name: Create new bucket
+      aws_s3:
+        bucket: s3sivansible
+        mode: create
+        region: us-west-2
+    
+    - name: Simple copy index.html
+      amazon.aws.s3_object:
+        bucket: s3sivansible
+        object: index.html
+        src: /home/siva/index.html
+        mode: put
+    
+    - name: Simple copy styles.css
+      amazon.aws.s3_object:
+        bucket: s3sivansible
+        object: styles.css
+        src: /home/siva/styles/styles.css
+        mode: put
+    - name: Enable public access and ACL for S3 bucket
+      shell: |
+        aws s3api put-bucket-acl --bucket {{ bucket_name }} --acl public-read
+        aws s3api put-bucket-policy --bucket {{ bucket_name }} --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::{{ bucket_name }}/*"]}]}'
+
+    - name: Enable static web hosting for S3 bucket
+      shell: |
+        aws s3 website s3://{{ bucket_name }} --index-document {{ index_document }} --error-document {{ error_document }}
+
+    
