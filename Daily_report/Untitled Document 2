@@ -8,5 +8,10 @@ Given Task : Webhosting on AWS and VM using Ansible.
 Task completed : Webhosting on VM done.
 Task pending : Webhosting on AWS pending will complete by tomorrow 11am.
 
+Date : 27-04-2023
 Given Task : Webhosting on AWS using Ansible.
 Task completed : Webhosting on AWS done.
+
+Date : 28-04-2023
+Given Task : To read/Understood & Write README files for above Yaml files.
+Task completed : Task done.
