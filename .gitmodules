@@ -16,3 +16,6 @@
 [submodule "tasks/nginx-github.io"]
 	path = tasks/nginx-github.io
 	url = https://github.com/siva-pra/nginx-github.io.git
+[submodule "sivaprasad"]
+	path = sivaprasad
+	url = https://github.com/siva-pra/sivaprasad.git

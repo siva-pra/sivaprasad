@@ -1,0 +1,53 @@
+```
+map $sent_http_content_type $charset {
+~^text/ UTF-8;
+~^image/ UTF-8;
+~^application/ UTF-8;
+}
+map $http_upgrade $connection_upgrade {
+default upgrade;
+'' close;
+}
+limit_req_zone $binary_remote_addr zone=mylimit:10m rate=3000r/s;
+server {
+server_name 127.0.0.1;
+listen 8443 ssl;
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_certificate /opt/cisco/merck/certs/merck-web.crt;
+ssl_certificate_key /opt/cisco/merck/certs/merck-web.key;
+ssl_stapling on;
+ssl_stapling_verify on;
+ssl_trusted_certificate /opt/cisco/merck/certs/merck-web.crt;proxy_hide_header X-Content-Type-Options;
+add_header X-Content-Type-Options nosniff;
+set $CSP "default-src 'self'";
+set $CSP "${CSP}; frame-ancestors";
+set $CSP "${CSP}; block-all-mixed-content";
+set $CSP "${CSP}; base-uri 'self'";
+set $CSP "${CSP}; worker-src blob:";
+set $CSP "${CSP}; img-src 'self' data:";
+set $CSP "${CSP}; connect-src 'self' wss:";
+set $CSP "${CSP}; style-src 'self' 'unsafe-inline'";
+set $CSP "${CSP}; script-src 'self' 'unsafe-inline' 'unsafe-eval'";
+add_header Content-Security-Policy $CSP;
+charset $charset;
+charset_types *;
+client_max_body_size 100m;
+location /merck {
+# Added on 06/12/2020
+add_header Cache-Control 'private, no-store, max-age=0';
+add_header X-Frame-Options sameorigin always;
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+always;
+limit_req zone=mylimit burst=3000 nodelay;
+root /opt/cisco;
+index index.html;
+try_files $uri $uri/ /merck/index.html;
+}
+error_page 404 /merck/404.html;
+location = /404.html {
+root /opt/cisco;
+}
+access_log /cohesion/log/access.log main;
+error_log /cohesion/log/error.log;
+}
+```
