@@ -1,5 +1,5 @@
 ---
-- name: cp files to s3
+- name: cp files to aws s3 bucket
   hosts: localhost
   connection: local 
   vars:
@@ -27,6 +27,7 @@
         object: styles.css
         src: /home/siva/styles/styles.css
         mode: put
+        
     - name: Enable public access and ACL for S3 bucket
       shell: |
         aws s3api put-bucket-acl --bucket {{ bucket_name }} --acl public-read

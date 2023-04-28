@@ -1,0 +1,63 @@
+sudo apt update
+sudo apt install software-properties-common -y
+sudo add-apt-repository --yes --update ppa:ansible/ansible
+sudo apt install ansible -y
+sudo apt install software-properties-common
+sudo apt-add-repository universe
+sudo apt update
+sudo apt install python3-pip -y
+sudo pip3 install boto3
+sudo pip3 install boto
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+sudo apt install unzip
+unzip awscliv2.zip
+sudo ./aws/install
+
+### to configure with AWS##
+---
+- name: cp files to aws s3 bucket
+  hosts: localhost
+  connection: local
+  vars:
+    bucket_name: s3sivansiww
+    index_document: index.html
+    error_document: error.html
+  tasks:
+   - name: Configure with AWS
+     shell: |
+      aws configure set aws_access_key_id AKIAUMJH6HCKA67F5J66
+      aws configure set aws_secret_access_key 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
+      aws configure set default.region us-east-1
+
+   - name: Create new bucket
+     aws_s3:
+       bucket: "{{ bucket_name }}"
+       mode: create
+       region: us-east-1
+
+   - name: Enable public access
+     shell: |
+       aws s3api put-public-access-block --bucket "{{bucket_name}}" --public-access-block-configuration "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false"
+
+   - name: Simple copy index.html
+     amazon.aws.s3_object:
+       bucket: "{{ bucket_name }}"
+       object: index.html
+       src: /home/siva/index.html
+       mode: put
+
+   - name: Simple copy styles.css
+     amazon.aws.s3_object:
+       bucket: "{{ bucket_name }}"
+       object: styles.css
+       src: /home/siva/styles.css
+       mode: put
+
+   - name: Enable public access and ACL for S3 bucket
+     shell: |
+       aws s3api put-bucket-acl --bucket {{ bucket_name }} --acl public-read
+       aws s3api put-bucket-policy --bucket {{ bucket_name }} --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::{{ bucket_name }}/"]}]}'
+
+   - name: Enable static web hosting for S3 bucket
+     shell: |
+       aws s3 website s3://{{ bucket_name }} --index-document {{ index_document }} --error-document {{ error_document }}
