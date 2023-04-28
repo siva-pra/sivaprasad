@@ -1,0 +1,117 @@
+---
+- name: BUILD OFFLINE REGISTRY
+  hosts: buildnode
+  tasks:
+
+    - name: INCLUDE VARIABLES
+      include_vars:
+        file: vars.yml
+
+    - set_fact:
+        buildnode: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+      with_items:
+      - "{{ groups['buildnode'] }}"
+
+    - name: CREATE ANSIBLE TMP DIRECTORY
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp"
+        state: directory
+
+    - name: CREATE DEPLOYMENT DIRECTORY
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files"
+        state: directory
+
+    - name: CHECK IF CLUSTER NODE INIT EXISTS
+      local_action: stat path=files/cluster-node-init
+      register: cluster_node_init
+
+    - name: REMOVE OLD CLUSTER NODE INIT
+      local_action: file path=files/cluster-node-init state=absent
+      when: cluster_node_init.stat.exists == True
+
+    - name: INSTALL HELM
+      get_url:
+        url: http://{{ buildnode }}/bin/helm-v3.3.3-linux-amd64.tar.gz
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/helm-v3.3.3-linux-amd64.tar.gz"
+
+    - name: UNPACK HELM
+      unarchive:
+        src: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/helm-v3.3.3-linux-amd64.tar.gz"
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/"
+        remote_src: yes
+
+    - name: COPY HELM FILES TO PATH
+      shell: cp {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/linux-amd64/helm /usr/bin
+
+    - name: INSTALL k9s
+      get_url:
+        url: http://{{ buildnode }}/bin/k9s
+        dest: /usr/bin/
+        mode: '0555'
+
+    - name: CHECK IF REGISTRY ARCHIVE IS PRESENT
+      stat:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts"
+      register: archive_dir
+
+    - name: COPY REGISTRY ARCHIVE
+      copy:
+        src: files/deployment-scripts.tgz
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/deployment-scripts.tgz"
+      when: archive_dir.stat.isdir is undefined
+
+    - name: UNTAR REGISTRY ARCHIVE
+      unarchive:
+        src: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/deployment-scripts.tgz"
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/"
+        remote_src: true
+      when: archive_dir.stat.isdir is undefined
+
+    - name: CHANGE REGISTRY DIRECTORY OWNER
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts"
+        state: directory
+        owner: root
+        group: root
+        recurse: true
+
+    - name: ENSURE CHARTMUSEUM-CHARTS EXISTS
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/chartmuseum-charts"
+        state: directory
+        mode: '0777'
+
+    - name: REMOVE SELF-SIGNED CERTS
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/templates/cohesion/charts/cohesion-frontend/configfiles/keystore-frontend/{{ item }}"
+        state: absent
+      when: selfsignedcerts == false
+      with_items:
+      - merck-web.crt
+      - merck-web.key
+
+    - name: ADD SIGNED CERTS
+      copy:
+        src: files/{{ item }}
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/templates/cohesion/charts/cohesion-frontend/configfiles/keystore-frontend/"
+      when: selfsignedcerts == false
+      with_items:
+      - merck-web.crt
+      - merck-web.key
+
+    - name: EXECUTE BUILD NODE
+      shell: cd {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts && ./build-node-init.sh {{ buildnode }}
+      become: yes
+
+    - name: FETCH cluster-node-init
+      fetch:
+        src: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/cluster-node-init"
+        dest: files/cluster-node-init
+        flat: yes
+
+    - name: DELETE ANSBILE TMP DIRECTORY
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp"
+        state: absent
+...

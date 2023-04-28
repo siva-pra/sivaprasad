@@ -1,0 +1,799 @@
+---
+- name: KUBERNETES PRODUCTION SETUP
+  hosts: master01:master02:master03
+  tasks:
+
+    - name: INCLUDE VARIABLES
+      include_vars:
+        file: vars.yml
+
+    - set_fact:
+        master01_name: "{{ hostvars[item]['ansible_hostname'] }}"
+      with_items:
+      - "{{ groups['master01'] }}"
+
+    - set_fact:
+        master01_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+      with_items:
+      - "{{ groups['master01'] }}"
+
+    - set_fact:
+        master02_name: "{{ hostvars[item]['ansible_hostname'] }}"
+      with_items:
+      - "{{ groups['master02'] }}"
+
+    - set_fact:
+        master02_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+      with_items:
+      - "{{ groups['master02'] }}"
+
+    - set_fact:
+        master03_name: "{{ hostvars[item]['ansible_hostname'] }}"
+      with_items:
+      - "{{ groups['master03'] }}"
+
+    - set_fact:
+        master03_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+      with_items:
+      - "{{ groups['master03'] }}"
+
+    - set_fact:
+        buildnode: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+      with_items:
+      - "{{ groups['buildnode'] }}"
+
+    - name: CREATE ANSIBLE TMP DIRECTORY
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp"
+        state: directory
+
+    - name: DISABLE SELINUX
+      selinux:
+        state: disabled
+
+    - name: STOP FIREWALLD
+      service:
+        name: firewalld
+        state: stopped
+        enabled: no
+
+    - name: ASSURE SYSCTLCTL.D
+      file:
+        path: /etc/sysctl.d/
+        state: directory
+
+    - name: APPLY SYSCTL CONF
+      sysctl:
+        name: "{{ item }}"
+        value: '1'
+        sysctl_set: yes
+      loop:
+        - net.bridge.bridge-nf-call-ip6tables
+        - net.bridge.bridge-nf-call-iptables
+        - net.ipv4.ip_forward
+        - net.ipv6.conf.all.disable_ipv6
+      ignore_errors: yes
+
+    - name: DISABLE SWAP
+      shell: swapoff -a
+
+    - name: REMOVE PERSISTENT SWAP CONFIG
+      lineinfile:
+        path: /etc/fstab
+        regexp: 'swap'
+        line: '#'
+
+    - name: CONFIGURE HOSTNAME
+      hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: MODIFY HOSTS FILE
+      lineinfile:
+        dest: /etc/hosts
+        insertafter: '$localhost'
+        line: "{{ item.ip }}\t\t\t{{ item.name }}"
+        state: present
+      with_items:
+        - { ip: "{{ master01_ip }}", name: "{{ master01_name }}" }
+        - { ip: "{{ master02_ip }}", name: "{{ master02_name }}" }
+        - { ip: "{{ master03_ip }}", name: "{{ master03_name }}" }
+
+    - name: ADD OFFLINE REPOSITORY
+      yum_repository:
+        name: offline-repo
+        description: Offline RPM Repository
+        baseurl: http://{{ buildnode }}/
+        gpgcheck: no
+
+    - name: UPDATE YUM CACHE
+      yum:
+        update_cache: yes
+
+    - name: CHECK IF DOCKER INSTALLED
+      shell: yum list installed | grep docker
+      register: docker_present
+      failed_when: docker_present.rc == 2
+
+    - name: GET INSTALLED DOCKER FILES
+      shell: yum list installed | grep docker | awk '{ print $1 }'
+      register: docker_packages
+      when: docker_present.rc == 0
+
+    - name: REMOVE OLD DOCKER PACKAGES
+      yum:
+        name: "{{ docker_packages.stdout_lines }}"
+        state: removed
+        disablerepo: "*"
+        enablerepo: offline-repo
+      when: docker_present.rc == 0
+
+    - name: INSTALL PACKAGES
+      yum:
+        name:
+        - yum-utils
+        - wget
+        - keepalived
+        - device-mapper-persistent-data
+        - lvm2
+        - NetworkManager-glib
+        - deltarpm
+        - docker-ce
+        - kubelet
+        - kubeadm
+        - kubectl
+        state: present
+        disablerepo: "*"
+        enablerepo: offline-repo
+
+    - name: START DOCKER SERVICE
+      service:
+        name: docker
+        state: started
+
+    - name: MODIFY DOCKER STORAGE LOCATION
+      template:
+        src:  templates/daemon-storage.j2
+        dest: /etc/docker/daemon.json
+      when: datadir is defined
+
+    - name: ADD DOCKER DAEMON.JSON
+      template:
+        src: templates/daemon.j2
+        dest: /etc/docker/daemon.json
+      when: datadir is undefined
+
+    - name: CREATE DOCKER STORAGE LOCATION
+      file:
+        path:  "{{ datadir | regex_replace('\\/$', '') }}/docker"
+        state: directory
+      when: datadir is defined
+
+    - name: RELOAD SYSTEM DAEMON
+      shell: systemctl daemon-reload
+      when: datadir is defined
+
+    - name: RESTART DOCKER SERVICE
+      service:
+        name: docker
+        state: restarted
+      when: datadir is defined
+
+    - name: ASSURE /etc/docker
+      file:
+        path: /etc/docker/
+        state: directory
+
+    - name: RELOAD SYSTEM UNIT FILES
+      shell: systemctl daemon-reload
+
+    - name: RESTART DOCKER SERVICE
+      service:
+        name: docker
+        state: restarted
+        enabled: yes
+
+    - name: REMOVE OLD cluster-node-init SCRIPT
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/cluster-node-init"
+        state: absent
+
+    - name: PUSH cluster-node-init SCRIPT
+      copy:
+        src: files/cluster-node-init
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/cluster-node-init"
+        mode: '0655'
+
+    - name: EXECUTE cluster-node-init SCRIPT
+      shell: cd {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp && ./cluster-node-init {{ buildnode }}
+      become: true
+
+    - name: ENABLE KUBELET
+      service:
+        name: kubelet
+        state: restarted
+        enabled: yes
+
+    - name: CREATE ETCD CERTIFICATE FOLDER
+      file:
+        path: /etc/etcd/ssl/
+        state: directory
+
+    - name: INSTALL ETCD
+      get_url:
+        url: http://{{ buildnode }}/bin/etcd-v3.4.13-linux-amd64.tar.gz
+        dest:  "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/etcd-v3.4.13-linux-amd64.tar.gz"
+
+    - name: INSTALL HELM
+      get_url:
+        url: http://{{ buildnode }}/bin/helm-v3.3.3-linux-amd64.tar.gz
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/helm-v3.3.3-linux-amd64.tar.gz"
+
+    - name: UNPACK ETCD
+      unarchive:
+        src: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/etcd-v3.4.13-linux-amd64.tar.gz"
+        dest:  "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp"
+        remote_src: yes
+
+    - name: UNPACK HELM
+      unarchive:
+        src: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/helm-v3.3.3-linux-amd64.tar.gz"
+        dest:  "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp"
+        remote_src: yes
+
+    - name: ENABLE CHRONYD
+      service:
+        name: chronyd
+        state: started
+        enabled: yes
+
+    - name: CHECK IF TIME SYNCHRONIZED
+      shell: chronyc sources | grep "\^\*"
+      register: ntp_sync
+      failed_when: ntp_sync.rc == 2
+
+    - name: ADD NTP SERVER
+      shell: chronyc add server {{ ntp_server }} iburst
+      when: ntp_sync.rc == 1
+
+    - name: CHECK IF ETCD EXISTS
+      stat:
+        path: /usr/bin/etcd
+      register: etcd_stat_result
+
+    - name: CHECK IF HELM EXISTS
+      stat:
+        path: /usr/bin/helm
+      register: helm_stat_result
+
+    - name: CHECK IF ETCD REMNANTS EXISTS
+      stat:
+        path: /var/lib/etcd
+      register: etcd_old_stat_result
+
+    - name: COPY ETCD FILES TO PATH
+      shell: cp {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/etcd-v3.4.13-linux-amd64/etcd* /usr/bin/
+      when: etcd_stat_result.stat.exists == False
+
+    - name: COPY HELM FILES TO PATH
+      shell: cp {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/linux-amd64/helm /usr/bin
+      when: helm_stat_result.stat.exists == False
+
+    - name: DELETE OLD ETCD DATA
+      file:
+        path: /var/lib/etcd
+        state: absent
+      when: etcd_old_stat_result.stat.exists
+
+    - name: CREATE ETCD DATA DIR
+      file:
+        path: /var/lib/etcd
+        state: directory
+
+    - name: CHECK IF CERT DIRECTORY EXISTS
+      stat:
+        path: /opt/ssl
+      register: cert_dir
+
+    - name: REMOVE OLD CERT DIRECTORY
+      file:
+        path: /opt/ssl
+        state: absent
+      when: cert_dir.stat.exists
+
+    - name: CREATE /opt/ssl
+      file:
+        path: /opt/ssl
+        state: directory
+
+    - name: CREATE /etc/etcd
+      file:
+        path: /etc/etcd
+        state: directory
+
+
+#### MASTER01
+- name: MASTER01 ETCD PREP
+  hosts: master01
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - set_fact:
+      master01_name: "{{ hostvars[item]['ansible_hostname'] }}"
+    with_items:
+    - "{{ groups['master01'] }}"
+
+  - set_fact:
+      master01_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master01'] }}"
+
+  - set_fact:
+      master02_name: "{{ hostvars[item]['ansible_hostname'] }}"
+    with_items:
+    - "{{ groups['master02'] }}"
+
+  - set_fact:
+      master02_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master02'] }}"
+
+  - set_fact:
+      master03_name: "{{ hostvars[item]['ansible_hostname'] }}"
+    with_items:
+    - "{{ groups['master03'] }}"
+
+  - set_fact:
+      master03_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master03'] }}"
+
+  - set_fact:
+      buildnode: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['buildnode'] }}"
+
+  - name: GET cfssl_linux-amd64
+    get_url:
+      url: http://{{ buildnode }}/bin/cfssl_linux-amd64
+      dest: /usr/bin/cfssl
+
+  - name: GET cfssljson_linux-amd64
+    get_url:
+      url: http://{{ buildnode }}/bin/cfssljson_linux-amd64
+      dest: /usr/bin/cfssljson
+
+  - name: MAKE CFSSL EXECUTABLE
+    shell: chmod +x /bin/cfssl*
+
+  - name: COPY ca-config.json
+    template:
+      src: templates/ca-config.j2
+      dest: /opt/ssl/ca-config.json
+
+  - name: COPY ca-csr.json
+    template:
+      src: templates/ca-csr.j2
+      dest: /opt/ssl/ca-csr.json
+
+  - name: COPY etcd-csr.json
+    template:
+      src: templates/etcd-csr.j2
+      dest: /opt/ssl/etcd-csr.json
+
+  - name: GENERATE ca
+    shell: cd /opt/ssl/ && cfssl gencert -initca ca-csr.json | cfssljson -bare ca
+
+  - name: GENERATE etcd
+    shell: cd /opt/ssl/ && cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes etcd-csr.json | cfssljson -bare etcd
+
+  - name: FETCH SSL CERTS FROM MASTER01
+    synchronize:
+      src: /opt/ssl/
+      mode: pull
+      dest: certs
+
+  - name: COPY SSL CERTS TO {{ master01.name }}
+    copy:
+      src: "{{ item }}"
+      dest: /etc/etcd/ssl/
+    with_fileglob:
+      - certs/*
+
+  - name: COPY ETCD SERVICE TO MASTER01
+    template:
+      src: templates/etcd01.service.j2
+      dest: /etc/systemd/system/etcd.service
+
+  - set_fact:
+      target_interface: "{{ item }}"
+    when: (hostvars[inventory_hostname]['ansible_%s' % item]|default({}))
+          .get('ipv4', {}).get('address') == ansible_default_ipv4.address
+    with_items:
+      - "{{ ansible_interfaces }}"
+
+  - name: COPY /etc/keepalived/keepalived.conf
+    template:
+      src: templates/keepalived01.j2
+      dest: /etc/keepalived/keepalived.conf
+
+#### Master02
+- name: CREATE ETCD AND KEEPALIVE MASTER02
+  hosts: master02
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - set_fact:
+      master01_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master01'] }}"
+
+  - set_fact:
+      master02_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master02'] }}"
+
+  - set_fact:
+      master03_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master03'] }}"
+
+  - name: COPY SSL CERTS TO {{ master02 }}
+    copy:
+      src: "{{ item }}"
+      dest: /etc/etcd/ssl/
+    with_fileglob:
+      - certs/*
+
+  - name: COPY ETCD SERVICE TO MASTER02
+    template:
+      src: templates/etcd02.service.j2
+      dest: /etc/systemd/system/etcd.service
+
+  - set_fact:
+      target_interface: "{{ item }}"
+    when: (hostvars[inventory_hostname]['ansible_%s' % item]|default({}))
+          .get('ipv4', {}).get('address') == ansible_default_ipv4.address
+    with_items:
+      - "{{ ansible_interfaces }}"
+
+  - name: COPY /etc/keepalived/keepalived.conf
+    template:
+      src: templates/keepalived02.j2
+      dest: /etc/keepalived/keepalived.conf
+
+#### Master03
+- name: CREATE ETCD AND KEEPALIVE MASTER03
+  hosts: master03
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - set_fact:
+      master01_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master01'] }}"
+
+  - set_fact:
+      master02_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master02'] }}"
+
+  - set_fact:
+      master03_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master03'] }}"
+
+  - name: COPY SSL CERTS TO {{ master03.name }}
+    copy:
+      src: "{{ item }}"
+      dest: /etc/etcd/ssl/
+    with_fileglob:
+      - certs/*
+
+  - name: COPY ETCD SERVICE TO MASTER03
+    template:
+      src: templates/etcd03.service.j2
+      dest: /etc/systemd/system/etcd.service
+
+  - set_fact:
+      target_interface: "{{ item }}"
+    when: (hostvars[inventory_hostname]['ansible_%s' % item]|default({}))
+          .get('ipv4', {}).get('address') == ansible_default_ipv4.address
+    with_items:
+      - "{{ ansible_interfaces }}"
+
+  - name: COPY /etc/keepalived/keepalived.conf
+    template:
+      src: templates/keepalived03.j2
+      dest: /etc/keepalived/keepalived.conf
+
+- name: FINISH ETCD CONFIG
+  hosts: master01:master02:master03
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - set_fact:
+      master01_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master01'] }}"
+
+  - set_fact:
+      master02_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master02'] }}"
+
+  - set_fact:
+      master03_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master03'] }}"
+
+  - name: RELOAD SYSTEM UNIT FILES
+    shell: systemctl daemon-reload
+
+  - name: START ETCD
+    service:
+      name: etcd
+      state: started
+      enabled: yes
+
+  - name: START keepalived
+    service:
+      name: keepalived
+      state: started
+      enabled: yes
+
+  - name: CHECK ETCD CLUSTER HEALTH
+    shell: etcdctl  --cacert=/etc/etcd/ssl/ca.pem --cert=/etc/etcd/ssl/etcd.pem --key=/etc/etcd/ssl/etcd-key.pem --endpoints=https://{{ master01_ip }}:2379,https://{{ master02_ip }}:2379,https://{{ master03_ip }}:2379 endpoint health
+    retries: 20
+    delay: 3
+    register: result
+    until: result.rc == 0
+
+  - name: COPY KUBEADM MANIFEST
+    template:
+      src: templates/kubeadm-config.j2
+      dest: /root/kubeadm-config.yaml
+
+##### MASTER01
+- name: DEPLOY KUBERNETES OVERLAY ON MASTER01
+  hosts: master01
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - pause:
+      seconds: 15
+
+  - name: KUBEADM INIT
+    shell: kubeadm init --config /root/kubeadm-config.yaml
+
+  - name: CREATE .kube
+    file:
+      path: /home/troot/.kube
+      #path: /root/.kube
+      state: directory
+      owner: root
+      group: root
+      mode: '0755'
+
+  - name: REMOVE OLD CONFIG FILE
+    file:
+      path: /home/troot/.kube/config
+      #path: /root/.kube/config
+      state: absent
+
+  - name: COPY KUBERNETES CONFIG FILE TO HOME
+    copy:
+      src: /etc/kubernetes/admin.conf
+      dest: /home/troot/.kube/config
+      # dest: /root/.kube/config
+      remote_src: yes
+      owner: root
+      group: root
+      mode: '0755'
+
+  - name: FETCH KUBE CONFIG FILE
+    fetch:
+      src: /home/troot/.kube/config
+      #src: /root/.kube/config
+      dest: files/config
+      flat: yes
+
+  - name: FETCH SSL CERTS FROM MASTER01
+    synchronize:
+      src: /etc/kubernetes/pki/
+      mode: pull
+      dest: pki
+
+####### MASTER02 AND MASTER03
+- name: DEPLOY KUBERNETES OVERLAY ON MASTER02 AND MASTER03
+  hosts: master02:master03
+
+  tasks:
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: COPY PKI FILES TO MASTERS
+    copy:
+      src: "{{ item }}"
+      dest: /etc/kubernetes/pki/
+    with_fileglob:
+      - pki/*
+
+  - pause:
+      seconds: 15
+
+  - name: KUBEADM INIT
+    shell:  kubeadm init --config  /root/kubeadm-config.yaml
+
+  - name: CREATE .kube
+    file:
+      path: /home/troot/.kube
+      #path: /root/.kube
+      state: directory
+      owner: root
+      group: root
+      mode: '0755'
+
+  - name: REMOVE OLD CONFIG FILES
+    file:
+      path: /home/troot/.kube/config
+      #path: /root/.kube/config
+      state: absent
+
+  - name: COPY KUBERNETES CONFIG FILE TO HOME
+    copy:
+      src: /etc/kubernetes/admin.conf
+      dest: /home/troot/.kube/config
+      #dest: /root/.kube/config
+      remote_src: yes
+      owner: root
+      group: root
+      mode: '0755'
+
+- name: CLEANUP TMP FILES
+  hosts: master01:master02:master03
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: DELETE ANSIBLE TMP DIRECTORY
+    file:
+      path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp"
+      state: absent
+
+- name: DEPLOY FLANNEL AND UNTAINT MASTERS
+  hosts: master01
+  tasks:
+
+  - name: COPY FLANNEL MANIFEST
+    copy:
+      src: files/manifests/kube-flannel.yml
+      dest: /root/kube-flannel.yml
+
+  - name: APPLY FLANNEL MANIFEST
+    shell:  kubectl apply -f /root/kube-flannel.yml
+    become: no
+
+  - name: TAINT MASTER NODES
+    shell: kubectl taint nodes --all node-role.kubernetes.io/master-
+    become: no
+
+  - name: COPY LOCAL-PATH MANIFEST
+    template:
+      src: files/manifests/local-path-storage.j2
+      dest: /root/local-path-storage.yaml
+    when: datadir is defined
+
+  - name: COPY LOCAL-PATH MANIFEST FOR DEFAULT DIR
+    template:
+      src: files/manifests/default-local-path-storage.j2
+      dest: /root/local-path-storage.yaml
+    when: datadir is undefined
+
+  - name: APPLY LOCAL-PATH MANIFEST
+    shell:  kubectl apply -f /root/local-path-storage.yaml
+    become: no
+
+  - name: SET LOCAL-PATH TO DEFAULT STORAGE CLASS
+    shell: kubectl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+    become: no
+
+- name: COPY KUBE CONFIG ONTO BUILD NODE
+  hosts: buildnode
+  tasks:
+
+  - set_fact:
+      master01_name: "{{ hostvars[item]['ansible_hostname'] }}"
+    with_items:
+    - "{{ groups['master01'] }}"
+
+  - set_fact:
+      master01_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master01'] }}"
+
+  - set_fact:
+      master02_name: "{{ hostvars[item]['ansible_hostname'] }}"
+    with_items:
+    - "{{ groups['master02'] }}"
+
+  - set_fact:
+      master02_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master02'] }}"
+
+  - set_fact:
+      master03_name: "{{ hostvars[item]['ansible_hostname'] }}"
+    with_items:
+    - "{{ groups['master03'] }}"
+
+  - set_fact:
+      master03_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['master03'] }}"
+
+  - set_fact:
+      buildnode: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['buildnode'] }}"
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: CREATE .kube
+    file:
+      path: /home/troot/.kube
+      #path: /root/.kube
+      state: directory
+      owner: root
+      group: root
+      mode: '0755'
+
+  - name: REMOVE OLD CONFIG FILE
+    file:
+      path: /home/troot/.kube/config
+      #path: /root/.kube/config
+      state: absent
+
+  - name: COPY CONFIG FILE
+    copy:
+      src: files/config
+      dest: /home/troot/.kube/config
+      #dest: /root/.kube/config
+      owner: root
+      group: root
+      mode: '0755'
+
+  - name: CHANGE TO LOADBALANCER IP
+    replace:
+      path: /home/troot/.kube/config
+      #path: /root/.kube/config
+      replace: "{{ loadbalancer_ip }}"
+      regexp: "{{ master01_ip }}"
+
+  - name: COPY INFRASTRUCTURE CHECK SCRIPT
+    template:
+      src: templates/infrastructure_test.j2
+      dest: /root/infrastructure_test.py
+      owner: root
+      group: root
+      mode: '0755'
+...

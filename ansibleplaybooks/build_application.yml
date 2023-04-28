@@ -1,0 +1,69 @@
+---
+- name: CONNECTED PHARMA APPLICATION DEPLOYMENT
+  hosts: buildnode
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: COPY METALLB CONFIG
+    copy:
+      src: files/metallb.yaml
+      dest: /root/metallb.yaml
+
+  - name: COPY METALLB L2 CONFIG
+    template:
+      src: templates/metallbL2-config.j2
+      dest: /root/metallbL2-config.yml
+
+  - name: APPLY METALLB CONFIG
+    shell: kubectl create -f /root/metallb.yaml
+    become: no
+
+  - name: APPLY METALLB L2 CONFIG
+    shell: kubectl create -f /root/metallbL2-config.yml
+    become: no
+
+  - name: LOAD HTTPS CERTS FROM CHARTMUSEUM
+    shell: echo | openssl s_client -connect local-docker-registry:5002 2>&1 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' > /root/cert.crt
+    become: no
+
+  - name: ADD CHART REPOSITORY
+    shell: helm repo add chartmuseum https://local-docker-registry:5002 --ca-file /root/cert.crt --username cisco --password Local-Registry-123
+    become: no
+
+  - name: RUN HELM REPO UPDATE
+    shell: helm repo update
+    become: no
+
+  - name: CREATE PHZIOT NAMESPACE
+    shell: kubectl create namespace phziot
+    become: no
+    
+  - name: CREATE MONITORING NAMESPACE
+    shell: kubectl create namespace monitoring
+    become: no
+
+  - name: HELM INSTALL STRIMZI KAFKA
+    shell: helm install strimzi-kafka chartmuseum/strimzi-kafka-operator --set watchAnyNamespace=true -n phziot --wait
+    become: no
+    
+  - name: HELM INSTALL LOKI
+    shell: helm install loki chartmuseum/loki-stack -n monitoring --timeout 30m
+    become: no
+    
+  - name: HELM INSTALL PHZIOT
+    shell: helm install phziot chartmuseum/phziot -n phziot --timeout 30m
+    become: no
+
+  - name: HELM INSTALL COHESION WITH MANUAL IP
+    shell: helm install cohesion chartmuseum/cohesion -n phziot --timeout 30m --set cohesion-frontend.loadBalancerIP={{ cohesion_frontend_ip }}
+    become: no
+    when: cohesion_frontend_ip is defined
+
+  - name: HELM INSTALL COHESION WITH DYNAMIC LOADBALANCER IP
+    shell: helm install cohesion chartmuseum/cohesion -n phziot --timeout 30m
+    become: no
+    when: cohesion_frontend_ip is undefined
+...

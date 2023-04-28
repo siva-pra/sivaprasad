@@ -1,0 +1,561 @@
+
+---
+# add 2 variables in vars.yml , homepath and siteid(cohesion pre-req - optional), modify the selfsignedcerts var to false if  you have 2 files cert and key in files folder
+- hosts: all
+  tasks: []
+
+- name: ENABLE FIREWALLD AND CONFIG CHANGES FOR ETCD & KEEPALIVED
+  hosts: master01:master02:master03
+  tasks:
+
+    - name: INCLUDE VARIABLES
+      include_vars:
+        file: vars.yml
+
+#    - set_fact:
+#        buildnode: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+#      with_items:
+#      - "{{ groups['buildnode'] }}"
+
+#    - set_fact:
+#        master01_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+#      with_items:
+#      - "{{ groups['master01'] }}"
+
+#    - set_fact:
+#        master02_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+#      with_items:
+#      - "{{ groups['master02'] }}"
+
+#    - set_fact:
+#        master03_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+#      with_items:
+#      - "{{ groups['master03'] }}"
+
+    - name: START FIREWALD SERVICE
+      service:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: Adding the buildnode IP to the firewall rule
+      shell: "{{ item }}"
+      with_items:
+      - firewall-cmd --zone=trusted --add-source={{ buildnode }}/32 --permanent
+      - firewall-cmd --zone=trusted --add-source={{ master01_ip }}/32 --permanent
+      - firewall-cmd --zone=trusted --add-source={{ master02_ip }}/32 --permanent
+      - firewall-cmd --zone=trusted --add-source={{ master03_ip }}/32 --permanent
+      - firewall-cmd --zone=trusted --add-source=198.10.0.1/24 --permanent
+      - firewall-cmd --zone=trusted --add-source=198.10.1.1/24 --permanent
+      - firewall-cmd --zone=trusted --add-source=198.10.2.1/24 --permanent
+      - firewall-cmd --permanent --zone=public --add-port=2022/tcp
+      - firewall-cmd --reload
+
+#    - name: STOP ETCD
+#      service:
+#        name: etcd
+#        state: stopped
+#        enabled: yes
+#      when: datadir is defined
+
+#    - name: COPY ETCD DATA TO PATH
+#      shell: cp -r /var/lib/etcd {{ datadir }}/
+#      when: datadir is defined
+
+#    - name: Comment data-dir line in /etc/systemd/system/etcd.service
+#      replace:
+#        path: /etc/systemd/system/etcd.service
+#        regexp: '^--data-dir='
+#        replace: '#--data-dir='
+#      when: datadir is defined
+
+#    - name: Inserting data-dir line after default line in /etc/systemd/system/etcd.service
+#      lineinfile:
+#        path: /etc/systemd/system/etcd.service
+#        line: --data-dir={{ datadir | default('/var/lib') }}/etcd \
+#        insertafter: '^#--data-dir='
+#      when: datadir is defined
+
+#    - name: Deleting old data-dir line in /etc/systemd/system/etcd.service
+#      lineinfile:
+#        path: /etc/systemd/system/etcd.service
+#        regexp: "#--data-dir="
+#        state: absent
+#      when: datadir is defined
+
+#    - name: RELOAD SYSTEM DAEMON
+#      shell: systemctl daemon-reload
+#      when: datadir is defined
+
+#    - name: START ETCD
+#      service:
+#        name: etcd
+#        state: started
+#        enabled: yes
+
+#    - name: CHECK ETCD CLUSTER HEALTH
+#      shell: etcdctl  --cacert=/etc/etcd/ssl/ca.pem --cert=/etc/etcd/ssl/etcd.pem --key=/etc/etcd/ssl/etcd-key.pem --endpoints=https://{{ master01_ip }}:2379,https://{{ master02_ip }}:2379,https://{{ master03_ip }}:2379 endpoint health
+#      retries: 20
+#      delay: 3
+#      register: result
+#      until: result.rc == 0
+
+    - name: Create Logs Folder for etcd and Keepalived
+      file:
+        path: "{{ datadir }}/logs"
+        state: directory
+      when: datadir is defined
+
+    - name: Create Log files for etcd and Keepalived
+      file:
+        path: "{{ datadir }}/logs/{{ item }}"
+        state: touch
+      loop:
+      - etcd.log
+      - keepalived.log
+      when: datadir is defined
+
+    - name: tester
+      shell: cat /etc/rsyslog.conf | grep "{{ datadir }}/logs/etcd.log"  | wc -l
+      register: logged
+
+    - name: Add config Line after RULES in rsyslog.conf
+      blockinfile:
+        path: /etc/rsyslog.conf
+        insertafter: "#### RULES ####"
+        block: |
+          #Log etcd related messages
+          :programname, isequal, "etcd" {{ datadir }}/logs/etcd.log
+          :programname, isequal, "etcd" ~
+          #Log Keepalived related messages
+          :programname, startwith, "Keepalived" {{ datadir }}/logs/keepalived.log
+          :programname, startwith, "Keepalived" ~
+      when: datadir is defined and logged.stdout == "0"
+
+    - name: Restart rsyslog service
+      service:
+        name: rsyslog
+        state: restarted
+      when: datadir is defined
+
+    - name: Comment Default line in /etc/sysconfig/keepalived
+      replace:
+        path: /etc/sysconfig/keepalived
+        regexp: '^KEEPALIVED_OPTIONS'
+        replace: '#KEEPALIVED_OPTIONS'
+      when: datadir is defined
+
+    - name: Inserting config line after default line in /etc/sysconfig/keepalived
+      lineinfile:
+        path: /etc/sysconfig/keepalived
+        line: KEEPALIVED_OPTIONS="-D -d -S 0"
+        insertafter: '^#KEEPALIVED_OPTIONS'
+      when: datadir is defined
+
+    - name: Restart keepalived service
+      service:
+        name: keepalived
+        state: restarted
+      when: datadir is defined
+
+    - name: CREATE LOGROTATE CONFIG FILE
+      file:
+        path: /etc/logrotate.d/iot-log.conf
+        state: touch
+      when: datadir is defined
+
+    - name: Add Config for Log-rotation
+      blockinfile:
+        path: /etc/logrotate.d/iot-log.conf
+        block: |
+          {{ datadir }}/logs/*.log {
+              rotate 10
+              size 10M
+              missingok
+              sharedscripts
+              compress
+              delaycompress
+              postrotate
+                 /bin/kill -HUP `cat /var/run/syslogd.pid 2> /dev/null` 2> /dev/null || true
+              endscript
+          }
+      when: datadir is defined
+
+- name: BUILD OFFLINE REGISTRY
+  hosts: buildnode
+  tasks:
+
+    - name: INCLUDE VARIABLES
+      include_vars:
+        file: vars.yml
+
+#    - set_fact:
+#        buildnode: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+#      with_items:
+#      - "{{ groups['buildnode'] }}"
+
+#    - set_fact:
+#        master01_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+#      with_items:
+#      - "{{ groups['master01'] }}"
+
+#    - set_fact:
+#        master02_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+#      with_items:
+#      - "{{ groups['master02'] }}"
+
+#    - set_fact:
+#        master03_ip: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+#      with_items:
+#      - "{{ groups['master03'] }}"
+
+#    - name: Place the deployment-script-updates in the right place
+#      copy:
+#          src: deployment-scripts-updates
+#          dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts"
+#          owner: root
+#          group: root
+#          mode: '0755'
+
+#    - name: Place the deployment-script-updates in the right place
+#      copy:
+#          src: deployment-scripts-updates/cluster-node-init
+#          dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts"
+#          owner: root
+#          group: root
+#          mode: '0755'
+#      ignore_errors: true
+  
+#    - name: EXECUTE PATCH
+#      shell: cd {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/deployment-scripts-updates/ && ./apply-patch.sh
+
+    - name: START FIREWALD SERVICE
+      service:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: Adding the buildnode IP to the firewall rule
+      shell: "{{ item }}"
+      with_items:
+      - firewall-cmd --zone=trusted --add-source={{ buildnode }}/32 --permanent
+      - firewall-cmd --zone=trusted --add-source={{ master01_ip }}/32 --permanent
+      - firewall-cmd --zone=trusted --add-source={{ master02_ip }}/32 --permanent
+      - firewall-cmd --zone=trusted --add-source={{ master03_ip }}/32 --permanent
+      - firewall-cmd --zone=trusted --add-source=198.10.0.1/24 --permanent
+      - firewall-cmd --zone=trusted --add-source=198.10.1.1/24 --permanent
+      - firewall-cmd --zone=trusted --add-source=198.10.2.1/24 --permanent
+      - firewall-cmd --permanent --zone=public --add-port=2022/tcp
+      - firewall-cmd --reload
+   
+    # 1.5.11 upgrade with new strimzi chart
+    - name: Delete dir before upgrading
+      file:
+        state: absent
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/{{ item }}"
+      with_items:
+        - templates
+        - phziot
+        - cohesion
+        - loki-stack
+        - images
+        - deployment-scripts-updates/templates
+      ignore_errors: true
+      tags:
+        - del_dir
+        
+    - name: UNTAR the deployment-scripts.tgz
+      unarchive:
+        src: files/deployment-scripts.tgz
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files"
+        remote_src: no 
+
+    - name: CHANGE REGISTRY DIRECTORY OWNER
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts"
+        state: directory
+        owner: root
+        group: root
+        recurse: true
+
+#    - name: Change the templates for Upgrade
+#      copy:
+#          src: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/deployment-script-updates/templates/*"
+#          dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/templates"
+#          owner: root
+#          group: root
+#          mode: '0755'
+
+    - name: Change the templates for upgrade
+      shell: cp -R {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/deployment-scripts-updates/templates/* {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/templates
+
+    - name: ENSURE CHARTMUSEUM-CHARTS EXISTS
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/chartmuseum-charts"
+        state: directory
+        mode: '0777'
+
+    - name: stat cohesion-prerequisite
+      stat: path=/opt/registry_files/deployment-scripts/templates/cohesion/cohesion-prerequisite
+      register: cohpre_stat
+      when: datadir is undefined
+
+    - name: Move cohesion prerequisite outside
+      command: mv /opt/registry_files/deployment-scripts/templates/cohesion/cohesion-prerequisite /opt/registry_files/deployment-scripts/cohesion-prerequisite
+      when: datadir is undefined and cohpre_stat.stat.exists
+
+    - name: stat cohesion-prerequisite
+      stat: path={{ datadir | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/templates/cohesion/cohesion-prerequisite
+      register: cohpre_stat
+      when: datadir is defined
+
+    - name: Move cohesion prerequisite outside
+      command: mv {{ datadir | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/templates/cohesion/cohesion-prerequisite {{ datadir | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/cohesion-prerequisite
+      when: datadir is defined and cohpre_stat.stat.exists
+
+    - name: REMOVE SELF-SIGNED CERTS
+      file:
+        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/templates/cohesion/charts/cohesion-frontend/configfiles/keystore-frontend/{{ item }}"
+        state: absent
+      when: selfsignedcerts == false
+      with_items:
+      - merck-web.crt
+      - merck-web.key
+
+    - name: ADD SIGNED CERTS
+      copy:
+        src: files/{{ item }}
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/templates/cohesion/charts/cohesion-frontend/configfiles/keystore-frontend/"
+      when: selfsignedcerts == false
+      with_items:
+      - merck-web.crt
+      - merck-web.key
+
+#    - name: REMOVE DOCKER REGISTRY AND CHARTMUSEUM
+#      shell: docker rm -f {{ item }}
+#      with_items:
+#      - local-chart-museum
+#      - local-docker-registry
+#      ignore_errors: true
+#      become: yes
+
+    - name: EXECUTE BUILD NODE INIT
+      shell: cd {{ datadir | regex_replace('\\/$', '') }}/registry_files/deployment-scripts && ./build-node-init.sh {{ buildnode }}
+      when: datadir is defined
+      become: yes
+
+    - name: EXECUTE BUILD NODE INIT
+      shell: cd /opt/registry_files/deployment-scripts/deployment-scripts-updates/ && ./build-node-init.sh {{ buildnode }}
+      when: datadir is undefined
+      become: yes
+
+    - name: UPDATE HELM REPO
+      shell: helm repo update
+      become: no
+
+    - name: FETCH cluster-node-init
+      fetch:
+        src: "{{ datadir | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/cluster-node-init"
+        dest: files/cluster-node-init
+        flat: yes
+      when: datadir is defined
+
+    - name: FETCH cluster-node-init
+      fetch:
+        src: /opt/registry_files/deployment-scripts/cluster-node-init
+        dest: files/cluster-node-init
+        flat: yes
+      when: datadir is undefined
+
+- name: COPY CLUSTER NODE INIT
+  hosts: master01:master02:master03
+  tasks:
+
+    - name: INCLUDE VARIABLES
+      include_vars:
+        file: vars.yml
+
+#    - set_fact:
+#        buildnode: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+#      with_items:
+#      - "{{ groups['buildnode'] }}"
+
+    - name: PUSH cluster-node-init SCRIPT
+      copy:
+        src: files/cluster-node-init
+        dest: "{{ homepath }}/cluster-node-init"
+        mode: '0655'
+
+    - name: EXECUTE cluster-node-init SCRIPT
+      shell: cd {{ homepath }} && ./cluster-node-init {{ buildnode }}
+      become: true
+
+    - name: REMOVE cluster-node-init
+      file:
+        path: "{{ homepath }}/cluster-node-init"
+        state: absent
+
+- name: Remove old and DEPLOY NEW APPLICATIONS
+  hosts: buildnode
+  tasks:
+
+    - name: LOAD DB-MIGRATION IMAGE
+      shell:  docker load -i /opt/iot/registry_files/deployment-scripts/images/database-migration.tar
+      
+    - name: PUSH DB-MIGRATION IMAGE
+      shell:  docker push local-docker-registry:5001/database-migration:v3.2.6
+
+    - name: LOAD API IMAGE
+      shell:  docker load -i /opt/iot/registry_files/deployment-scripts/images/api.tar
+      
+    - name: PUSH API IMAGE
+      shell:  docker push local-docker-registry:5001/api:v3.2.6
+
+    - name: LOAD MERCK-FRONTEND IMAGE
+      shell:  docker load -i /opt/iot/registry_files/deployment-scripts/images/merck-frontend.tar
+      
+    - name: PUSH MERCK-FRONTEND IMAGE
+      shell:  docker push local-docker-registry:5001/merck-frontend:v3.2.6
+
+    - name: LOAD MERCK-BACKEND IMAGE
+      shell:  docker load -i /opt/iot/registry_files/deployment-scripts/images/merck-backend.tar
+      
+    - name: PUSH MERCK-BACKEND IMAGE
+      shell:  docker push local-docker-registry:5001/merck-backend:v3.2.6
+
+    - name: INCLUDE VARIABLES
+      include_vars:
+        file: vars.yml
+
+    - name: HELM UPDATE
+      shell: helm repo update
+      become: no
+
+    - name: UNINSTALL Cohesion
+      shell: helm uninstall cohesion -n  phziot
+      become: no
+
+    - name: uninstall PHZIOT Application
+      command: helm uninstall phziot -n phziot
+      become: no
+
+# Time Delay 6 minutes
+    - pause:
+        seconds: 360
+
+    - name: Delete all hanging pods in phziot namespace after graceful time of 6 minutes
+      shell: kubectl delete pod $(kubectl get pods -n phziot | awk '{ print $1 }' | grep -v strimzi) --grace-period=0 --force --namespace phziot
+      become: no
+      ignore_errors: yes 
+
+    - name: Delete the All Services in phziot Namespace
+      shell: kubectl delete --all services -n phziot
+      ignore_errors: true
+      become: no
+
+# 1.5.6 release specific for upgrade
+    - name: Delete kafka topics
+      shell: kubectl delete kafkatopic $(kubectl get kafkatopic -n phziot | awk '{ print $1 }' | grep merck-pharma) -n phziot
+      ignore_errors: true
+      become: no
+
+    - name: Delete Stale Jobs if they are Present
+      shell: kubectl delete job -n phziot phziot-db-init
+      ignore_errors: true
+      become: no
+
+# 1.5.6 release specific for upgrade
+    - name: Delete kafka related pvc's
+      shell: kubectl delete pvc $(kubectl get pvc -n phziot | awk '{ print $1 }' | grep kafkacluster) -n phziot
+      ignore_errors: true
+      become: no
+
+# Updated delete 2 wso2 PVCs for 1.4.5 release
+    - name: Delete two wso2 PVCs
+      shell: kubectl -n phziot delete pvc storage-apis-cohesion-wso2-0 storage-mysql-cohesion-wso2-0
+      ignore_errors: true
+      become: no
+
+    - pause:
+       seconds: 30
+
+    - name: LOAD HTTPS CERTS FROM CHARTMUSEUM
+      shell: echo | openssl s_client -connect local-docker-registry:5002 2>&1 | sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' > {{homepath}}/cert.crt
+      become: no
+
+    - name: ADD CHART REPOSITORY
+      shell: helm repo add chartmuseum https://local-docker-registry:5002 --force-update --ca-file {{homepath}}/cert.crt --username cisco --password Local-Registry-123
+      become: no
+
+    - name: COPY ALL MQTT LICENSES TO DATADIR
+      copy:
+        src: files/mqtt-licences/
+        dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/mqtt-licences/"
+
+    - name: HELM INSTALL PHZIOT
+      shell: helm install phziot chartmuseum/phziot -n phziot -f {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/phziot/values-prod.yaml --timeout 30m 
+      become: no
+
+# Time Delay 6 minutes
+    - pause:
+       seconds: 360
+
+    - name: RUN HELM REPO UPDATE
+      shell: helm repo update
+      become: no
+
+# Cohesion prerequisete optional
+# Comment and append line
+#    - name: Comment existing line
+#      replace:
+#        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/cohesion-prerequisite/cohesion-prerequisite.sh"
+#        regexp: '^OPTION'
+#        replace: '#OPTION'
+
+# Cohesion prerequisete optional
+#    - name: Inserting a line after that commented line 
+#      lineinfile:
+#        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/cohesion-prerequisite/cohesion-prerequisite.sh"
+#        line: "{{ siteid }}"
+#        insertafter: '^#OPTION'
+
+# Cohesion prerequisete optional
+#    - name: COHESION PRE-REQUISITE
+#      shell: cd {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/cohesion-prerequisite && chmod +x cohesion-prerequisite.sh && chmod +x utils && ./cohesion-prerequisite.sh -n phziot
+#      become: no
+
+# Cohesion prerequisete optional
+#    - name: Remove changes in line
+#      replace:
+#        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/cohesion-prerequisite/cohesion-prerequisite.sh"
+#        regexp: '^OPTION.*'
+#        replace: '#'
+
+# Cohesion prerequisete optional
+#    - name: unComment existing line
+#      replace:
+#        path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/registry_files/deployment-scripts/cohesion-prerequisite/cohesion-prerequisite.sh"
+#        regexp: '^#OPTION'
+#        replace: 'OPTION'
+      
+#    - name: HELM INSTALL COHESION WITH MANUAL IP
+#      shell: helm install cohesion chartmuseum/cohesion -n phziot --timeout 30m --set cohesion-frontend.loadBalancerIP={{ cohesion_frontend_ip }}
+#      become: no
+#      when: cohesion_frontend_ip is defined
+
+#    - name: HELM INSTALL COHESION WITH DYNAMIC LOADBALANCER IP
+#      shell: helm install cohesion chartmuseum/cohesion -n phziot --timeout 30m
+#      become: no
+#      when: cohesion_frontend_ip is undefined
+
+#    - pause:
+#       seconds: 180
+
+#    - name: Additional command prior to UI access
+#      shell: kubectl -n phziot exec cohesion-wso2-0 -c wso2 -- /usr/sbin/wso2/set_auth_roles_in_wso2.sh passwd=Adm1n123! domain=MERCK PM-Admin=PM-Admin PM-Operator=PM-Operator PM-Auditor=PM-Observer PM-QA=PM-QA PM-GLIMS=PM-GLIMS
+      
+# Remove the extracted folder 
+#    - local_action: file path=deployment-scripts-updates state=absent
+
+# Remove the tar ball from the path manually 
+

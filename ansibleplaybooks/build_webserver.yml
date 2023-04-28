@@ -1,0 +1,237 @@
+---
+- name: BUILD OFFLINE WEBSERVER
+  hosts: buildnode
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - set_fact:
+      buildnode: "{{ hostvars[item]['ansible_default_ipv4']['address'] }}"
+    with_items:
+    - "{{ groups['buildnode'] }}"
+
+  - name: CREATE DATA DIRECTORY
+    file:
+      path: "{{ datadir | regex_replace('\\/$', '') }}"
+      state: directory
+      owner: root
+      group: root
+      mode: '0755'
+    when: datadir is defined
+
+  - name: CREATE DIRECTORY FOR REPOSITORY
+    file:
+      path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/local-repository"
+      state: directory
+      owner: root
+      group: root
+      mode: '0755'
+
+  - name: CREATE ANSIBLE TMP
+    file:
+      path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp"
+      state: directory
+
+  - name: COPY REPO ARCHIVE
+    copy:
+      src: files/merck_repo.tgz
+      dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/merck_repo.tgz"
+
+  - name: UNTAR REPO
+    unarchive:
+      src: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp/merck_repo.tgz"
+      dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/local-repository"
+      remote_src: true
+
+  - name: STOP FIREWALD SERVICE
+    service:
+      name: firewalld
+      state: stopped
+      enabled: no
+
+  - name: ENABLE CHRONYD
+    service:
+      name: chronyd
+      state: started
+      enabled: yes
+
+  - name: CHECK IF TIME SYNCHRONIZED
+    shell: chronyc sources | grep "\^\*"
+    register: ntp_sync
+    failed_when: ntp_sync.rc == 2
+
+  - name: ADD NTP SERVER
+    shell: chronyc add server {{ ntp_server }} iburst
+    when: ntp_sync.rc == 1
+
+  - name: CREATE REPOSITORY FILE
+    yum_repository:
+      name: offline-repo
+      description: Offline RPM Repository
+      baseurl: file://{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/local-repository
+      gpgcheck: no
+
+  - name: UPDATE YUM INFO
+    yum:
+      update_cache: yes
+
+  - name: CHECK IF DOCKER INSTALLED
+    shell: yum list installed | grep docker
+    register: docker_present
+    failed_when: docker_present.rc == 2
+
+  - name: GET INSTALLED DOCKER FILES
+    shell: yum list installed | grep docker | awk '{ print $1 }'
+    register: docker_packages
+    when: docker_present.rc == 0
+
+  - name: REMOVE OLD DOCKER PACKAGES
+    yum:
+      name: "{{ docker_packages.stdout_lines }}"
+      state: removed
+    when: docker_present.rc == 0
+
+  - name: INSTALL HTTPD/DOCKER-CE/PYTHON3
+    yum:
+      name:
+      - httpd
+      - docker-ce
+      - python3
+      - kubectl
+      disablerepo: "*"
+      enablerepo: offline-repo
+
+  - name: START DOCKER SERVICE
+    service:
+      name: docker
+      state: started
+    when: datadir is defined
+
+  - name: MODIFY DOCKER STORAGE LOCATION
+    template:
+      src:  templates/docker-storage.j2
+      dest: /etc/docker/daemon.json
+    when: datadir is defined
+
+  - name: CREATE DOCKER STORAGE LOCATION
+    file:
+      path:  "{{ datadir | regex_replace('\\/$', '') }}/docker"
+      state: directory
+    when: datadir is defined
+
+  - name: RELOAD SYSTEM DAEMON
+    shell: systemctl daemon-reload
+    when: datadir is defined
+
+  - name: RESTART DOCKER SERVICE
+    service:
+      name: docker
+      state: restarted
+    when: datadir is defined
+
+  - name: CREATE NEW .ansible DIRECTORY
+    file:
+      path:  "{{ datadir | regex_replace('\\/$', '') }}/.ansible"
+      state: directory
+    when: datadir is defined
+
+  - name: REMOVE OLD .ansible FILE
+    file:
+      path: ~/.ansible
+      state: absent
+    when: datadir is defined
+
+  - name: CREATE .ansible SYMLINK
+    shell: ln -s "{{ datadir | regex_replace('\\/$', '') }}/.ansible" ~/.ansible
+    when: datadir is defined
+
+  - name: MAKE PY TMP DIR
+    file:
+      path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/pydata"
+      state: directory
+      owner: root
+      group: root
+
+  - name: COPY PARAMIKO DEPENDENCIES
+    copy:
+      src: "{{ item }}"
+      dest: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/pydata"
+      owner: root
+      group: root
+    with_fileglob:
+      - files/py/*
+
+  - name: INSTALL PARAMIKO AND KUBERNETES CLIENT
+    shell: cd {{ datadir | default('/opt') | regex_replace('\\/$', '') }}/pydata/ && python3 -m pip install --user -r requirements.txt --no-index --find-links file:///{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/pydata/
+    become: no
+
+  - name: REMOVE PY TMP DIR
+    file:
+      path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/pydata"
+      state: absent
+
+  - name: START HTTPD SERVICE
+    service:
+      name: httpd
+      state: started
+      enabled: yes
+
+  - name: START DOCKER SERVICE
+    service:
+      name: docker
+      state: started
+      enabled: yes
+
+  - name: REPLACE DOCUMENT ROOT
+    lineinfile:
+      path: /etc/httpd/conf/httpd.conf
+      regexp: 'DocumentRoot "/var/www/html"'
+      line: DocumentRoot "{{ datadir | regex_replace('\\/$', '') }}/local-repository"
+    when: datadir is defined
+
+  - name: REPLACE /var/www DIRECTORY REFERENCE
+    lineinfile:
+      path: /etc/httpd/conf/httpd.conf
+      regexp: '<Directory "/var/www">'
+      line: <Directory "{{ datadir | regex_replace('\\/$', '') }}">
+    when: datadir is defined
+
+  - name: REPLACE /var/www/html DIRECTORY REFERENCE
+    lineinfile:
+      path: /etc/httpd/conf/httpd.conf
+      regexp: '<Directory "/var/www/html">'
+      line: <Directory "{{ datadir | regex_replace('\\/$', '') }}/local-repository">
+    when: datadir is defined
+
+  - name: ADD HTTP CONTEXT TO {{ datadir }}/local-repository
+    sefcontext:
+      target: "{{ datadir | regex_replace('\\/$', '') }}local-repository(/.*)?"
+      setype: httpd_sys_content_t
+      state: present
+    when: datadir is defined
+    ignore_errors: yes
+
+  - name: APPLY NEW SELINUX FILE CONTEXT
+    command: restorecon -irv {{ datadir | regex_replace('\\/$', '') }}local-repository
+    ignore_errors: yes
+    when: datadir is defined
+
+  - name: RESTART HTTPD SERVICE
+    service:
+      name: httpd
+      state: restarted
+
+  - name: CREATE HTTP REPO FILES
+    unarchive:
+      src: /opt/ansible_tmp/merck_repo.tgz
+      dest: /var/www/html
+      remote_src: true
+    when: datadir is undefined
+
+  - name: REMOVE ANSIBLE TMP DIRECTORY
+    file:
+      path: "{{ datadir | default('/opt') | regex_replace('\\/$', '') }}/ansible_tmp"
+      state: absent
+...

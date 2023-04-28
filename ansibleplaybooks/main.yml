@@ -1,0 +1,131 @@
+---
+- hosts: all
+  tasks: []
+
+- hosts: buildnode
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: BUILD OFFLINE WEBSERVER
+    include: buildnode/build_webserver.yml
+
+  - name: BUILD OFFLINE REGISTRY
+    include: buildnode/build_registry.yml
+
+- hosts: master01:master02:master03
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: KUBERNETES PRODUCTION SETUP
+    include: masters/kube_prod_setup.yml
+
+- hosts: master01
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: "{{ master02.name }}: ETCD PREP"
+    include: master02/etcd_prep.yml
+
+- hosts: master03
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: "{{ master02.name }}: CREATE ETCD AND KEEPALIVE"
+    include: master02/create_etcd.yml
+
+- hosts: master03
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: "{{ master03.name }}: CREATE ETCD AND KEEPALIVE"
+    include: master03/create_etcd.yml
+
+- hosts: master01:master02:master03
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: FINISH ETCD CONFIG
+    include: masters/finish_etcd.yml
+
+- hosts: master01
+  #environment:
+  #  PATH: /usr/bin:/usr/sbin
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+   
+
+  - name: DEPLOY KUBERNETES OVERLAY ON {{ master01.name }}
+    include: master01/deploy_kube.yml
+
+- hosts: master02:master03
+  #environment:
+  #  PATH: /usr/bin:/usr/sbin
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: DEPLOY KUBERNETES OVERLAY ON {{ master02.name }} AND {{ master03.name }}
+    include: masters/sub_deploy_kube.yml
+
+- hosts: master01:master02:master03
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+      
+  - name: Restart keepalived service
+    service:
+      name: keepalived
+      state: restarted
+    when: datadir is defined
+
+  - name: CLEANUP TMP FILES
+    include: masters/cleanup.yml
+
+- hosts: master01
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: DEPLOY FLANNEL AND UNTAINT MASTERS
+    include: master01/deploy_cni.yml
+
+- hosts: buildnode
+  tasks:
+
+  - name: INCLUDE VARIABLES
+    include_vars:
+      file: vars.yml
+
+  - name: COPY KUBE CONFIG ONTO BUILD NODE
+    include: buildnode/buildnode_kubeconfig.yml
+
+  - name: CONNECTED PHARMA APPLICATION DEPLOYMENT
+    include: buildnode/build_application.yml

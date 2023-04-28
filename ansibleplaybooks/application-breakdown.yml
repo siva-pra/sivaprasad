@@ -1,0 +1,62 @@
+- name: Deleting the Solution Applications
+  hosts: buildnode
+  tasks:
+
+    - name: INCLUDE VARIABLES
+      include_vars:
+        file: vars.yml
+
+    - name: HELM UPDATE
+      shell: helm repo update
+      become: no
+
+    - name: UNINSTALL Cohesion
+      shell: helm uninstall cohesion -n  phziot
+      become: no
+      ignore_errors: true
+
+    - name: uninstall PHZIOT Application
+      command: helm uninstall phziot -n phziot
+      become: no
+      ignore_errors: true      
+
+# Time Delay 6 minutes
+    - pause:
+        seconds: 360
+
+    - name: Delete all hanging pods in phziot namespace after graceful time of 6 minutes
+      shell: kubectl delete pod $(kubectl get pods -n phziot | awk '{ print $1 }' | grep -v strimzi) --grace-period=0 --force --namespace phziot
+      become: no
+      ignore_errors: yes
+
+    - name: Delete the All Services in phziot Namespace
+      shell: kubectl delete --all services -n phziot
+      ignore_errors: true
+      become: no
+
+# 1.5.6 release specific for upgrade
+    - name: Delete kafka topics
+      shell: kubectl delete kafkatopic $(kubectl get kafkatopic -n phziot | awk '{ print $1 }' | grep merck-pharma) -n phziot
+      ignore_errors: true
+      become: no
+
+# 1.5.6 release specific for upgrade
+    - name: Delete kafka related pvc's
+      shell: kubectl delete pvc $(kubectl get pvc -n phziot | awk '{ print $1 }' | grep kafkacluster) -n phziot
+      ignore_errors: true
+      become: no
+
+    - name: Delete Stale Jobs if they are Present
+      shell: kubectl delete job -n phziot phziot-db-init
+      ignore_errors: true
+      become: no
+
+# Updated delete 2 wso2 PVCs for 1.4.5 release
+    - name: Delete two wso2 PVCs
+      shell: kubectl -n phziot delete pvc storage-apis-cohesion-wso2-0 storage-mysql-cohesion-wso2-0
+      ignore_errors: true
+      become: no
+
+    - pause:
+       seconds: 30
+

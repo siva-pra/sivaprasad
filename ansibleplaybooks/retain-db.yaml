@@ -1,0 +1,6 @@
+dbFromScratch:
+  enabled: false
+
+dbIncremental:
+  enabled: true
+
