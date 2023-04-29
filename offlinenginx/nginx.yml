@@ -1,0 +1,43 @@
+---
+- name: Copy files to target machine and start Nginx service
+  hosts: all
+  become: true
+  tasks:
+    - name: Copy nms-dependencies-ubuntu22.04.tar.gz to target machine
+      copy:
+        src: /opt/nms-dependencies-ubuntu22.04.tar.gz
+        dest: /opt/
+
+    - name: Extract files from archive
+      unarchive:
+        src: /opt/nms-dependencies-ubuntu22.04.tar.gz
+        dest: /opt/
+        remote_src: yes
+      become: yes
+
+    - name: Install dependencies using dpkg1
+      command: sudo dpkg -i /opt/clickhouse-common-static_22.3.15.33_amd64.deb
+      become: true
+
+    - name: Install dependencies using dpkg2
+      command: sudo dpkg -i /opt/clickhouse-server_22.3.15.33_amd64.deb
+      become: true
+
+    - name: Install dependencies using dpkg3
+      command: sudo dpkg -i /opt/nginx_1.21.6-1~jammy_amd64.deb
+      become: true
+
+    - name: Start Nginx service
+      systemd:
+        name: nginx
+        state: started
+
+
+  
+#apt update
+#wget https://docs.nginx.com/nginx-management-suite/scripts/fetch-external-dependencies.sh
+#chmod 777 fetch-external-dependencies.sh
+#./fetch-external-dependencies.sh ubuntu22.04
+#run these commands in our local machine
+
+#you will get a Tar.gz file and you are copying this Tar file to our target machine and our playbook starts from here
